@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Subjects</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="index.html">Quiz<span>Point</span></a>
+      <div class="nav-links">
+        <a href="index.html">Quizzes</a>
+        <a href="subjects.html" class="active">Subjects</a>
+        <a href="create.html" id="nav-create">Create Quiz</a>
+        <span id="nav-user" class="nav-user"></span>
+        <a href="#" id="logout-link">Logout</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-head">
+      <h1>Subjects</h1>
+      <p class="subtitle" id="subtitle">Request to join a subject. Its quizzes appear once the teacher accepts you.</p>
+    </div>
+
+    <div id="alert" class="alert"></div>
+
+    <!-- Teachers only: create a subject -->
+    <form id="subject-form" class="card hidden" novalidate>
+      <h2>Create a subject</h2>
+      <div class="form-row">
+        <div class="form-group">
+          <label for="subject-name">Subject name *</label>
+          <input type="text" id="subject-name" placeholder="e.g. Database Management Systems">
+        </div>
+        <div class="form-group">
+          <label for="subject-code">Subject code *</label>
+          <input type="text" id="subject-code" placeholder="e.g. CS235AI">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" id="create-subject-btn" class="btn">Create subject</button>
+      </div>
+    </form>
+
+    <div id="subject-list"></div>
+  </main>
+
+  <script>
+    // ---------- Login check (same block on every page) ----------
+    const token = localStorage.getItem('qp_token');
+    const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
+    if (!token || !me) {
+      location.replace('login.html');
+      throw new Error('Not logged in');
+    }
+    const isTeacher = me.role === 'teacher';
+    document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
+    // Only teachers see the "Create Quiz" link
+    if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
+
+    // fetch() that always sends the token, and goes to login if the session has ended
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token }
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('qp_token');
+        localStorage.removeItem('qp_user');
+        location.replace('login.html');
+        throw new Error('Please log in again');
+      }
+      return res;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      localStorage.removeItem('qp_token');
+      localStorage.removeItem('qp_user');
+      location.replace('login.html');
+    });
+    // ---------- End of login check ----------
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function fmtDate(value) {
+      return new Date(value).toLocaleString([], {
+        weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+      });
+    }
+
+    const alertBox = document.getElementById('alert');
+    const listBox = document.getElementById('subject-list');
+
+    function showAlert(message, type) {
+      alertBox.className = 'alert show ' + (type === 'success' ? 'alert-success' : 'alert-error');
+      alertBox.innerHTML = message;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function friendly(err) {
+      return err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : escapeHtml(err.message);
+    }
+
+    // ================= STUDENT VIEW =================
+    const STATUS_TEXT = { none: '', pending: 'Request sent', approved: 'Joined', rejected: 'Not accepted' };
+
+    async function loadStudentSubjects() {
+      const res = await api('/api/subjects');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not load subjects');
+
+      if (data.length === 0) {
+        listBox.innerHTML = '<div class="card empty">No subjects yet. Your teachers will add them soon.</div>';
+        return;
+      }
+
+      listBox.innerHTML = data.map((s) => {
+        let action;
+        if (s.myStatus === 'approved') {
+          action = `<a class="btn btn-small btn-outline" href="index.html?subject=${s._id}">See quizzes</a>`;
+        } else if (s.myStatus === 'pending') {
+          action = '<button class="btn btn-small" disabled>Waiting for teacher</button>';
+        } else if (s.myStatus === 'rejected') {
+          action = `<button class="btn btn-small join-btn" data-id="${s._id}">Request again</button>`;
+        } else {
+          action = `<button class="btn btn-small join-btn" data-id="${s._id}">Request to join</button>`;
+        }
+        return `
+          <div class="card subject-row">
+            <div>
+              <h3>${escapeHtml(s.name)}</h3>
+              <p class="meta">${escapeHtml(s.code)} &middot; ${escapeHtml(s.teacherName)}</p>
+            </div>
+            <div class="req-actions" style="align-items:center">
+              ${s.myStatus !== 'none' ? `<span class="pill pill-${s.myStatus}">${STATUS_TEXT[s.myStatus]}</span>` : ''}
+              ${action}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      listBox.querySelectorAll('.join-btn').forEach((btn) => {
+        btn.addEventListener('click', () => joinSubject(btn));
+      });
+    }
+
+    async function joinSubject(btn) {
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+      try {
+        const res = await api('/api/subjects/' + btn.dataset.id + '/join', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not send request');
+        showAlert('Request sent. The teacher needs to accept it before you see the quizzes.', 'success');
+      } catch (err) {
+        showAlert(friendly(err), 'error');
+      }
+      loadStudentSubjects().catch((err) => showAlert(friendly(err), 'error'));
+    }
+
+    // ================= TEACHER VIEW =================
+    const form = document.getElementById('subject-form');
+    const nameInput = document.getElementById('subject-name');
+    const codeInput = document.getElementById('subject-code');
+    const createBtn = document.getElementById('create-subject-btn');
+
+    async function loadTeacherSubjects() {
+      const res = await api('/api/subjects');
+      const subjects = await res.json();
+      if (!res.ok) throw new Error(subjects.error || 'Could not load subjects');
+
+      if (subjects.length === 0) {
+        listBox.innerHTML = '<div class="card empty">No subjects yet. Create your first one above.</div>';
+        return;
+      }
+
+      // Each subject's requests come from its own route
+      const withRequests = await Promise.all(subjects.map(async (s) => {
+        const r = await api('/api/subjects/' + s._id + '/requests');
+        const list = await r.json();
+        return { ...s, requests: r.ok ? list : [] };
+      }));
+
+      listBox.innerHTML = withRequests.map((s) => {
+        const pending = s.requests.filter((e) => e.status === 'pending');
+        const members = s.requests.filter((e) => e.status === 'approved');
+        const rejected = s.requests.filter((e) => e.status === 'rejected');
+
+        return `
+          <div class="card">
+            <div class="subject-row">
+              <div>
+                <h3>${escapeHtml(s.name)}</h3>
+                <p class="meta">${escapeHtml(s.code)} &middot; ${members.length} student${members.length === 1 ? '' : 's'}${rejected.length ? ` &middot; ${rejected.length} not accepted` : ''}</p>
+              </div>
+              ${pending.length ? `<span class="pill pill-pending">${pending.length} waiting</span>` : ''}
+            </div>
+
+            ${pending.length ? `
+              <div class="req-list">
+                ${pending.map((e) => `
+                  <div class="req-row">
+                    <div class="who"><strong>${escapeHtml(e.name)}</strong> <span class="meta">${escapeHtml(e.usn)} &middot; asked ${fmtDate(e.requestedAt)}</span></div>
+                    <div class="req-actions">
+                      <button class="btn btn-small decide-btn" data-id="${e._id}" data-status="approved">Accept</button>
+                      <button class="btn btn-small btn-danger decide-btn" data-id="${e._id}" data-status="rejected">Reject</button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : '<p class="meta" style="margin-top:10px">No requests waiting.</p>'}
+
+            ${members.length ? `
+              <details class="members">
+                <summary>Show ${members.length} student${members.length === 1 ? '' : 's'}</summary>
+                <div class="req-list">
+                  ${members.map((e) => `
+                    <div class="req-row"><div class="who"><strong>${escapeHtml(e.name)}</strong> <span class="meta">${escapeHtml(e.usn)}</span></div></div>
+                  `).join('')}
+                </div>
+              </details>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+
+      listBox.querySelectorAll('.decide-btn').forEach((btn) => {
+        btn.addEventListener('click', () => decide(btn));
+      });
+    }
+
+    async function decide(btn) {
+      const row = btn.closest('.req-row');
+      row.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      try {
+        const res = await api('/api/enrollments/' + btn.dataset.id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: btn.dataset.status })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not update the request');
+        alertBox.classList.remove('show');
+      } catch (err) {
+        showAlert(friendly(err), 'error');
+      }
+      loadTeacherSubjects().catch((err) => showAlert(friendly(err), 'error'));
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = nameInput.value.trim();
+      const code = codeInput.value.trim().toUpperCase();
+
+      if (name.length < 2) return showAlert('Please enter the subject name.', 'error');
+      if (!/^[A-Z0-9-]{2,12}$/.test(code)) return showAlert('Subject code must be 2 to 12 letters, numbers or dashes, like CS235AI.', 'error');
+
+      createBtn.disabled = true;
+      createBtn.textContent = 'Creating...';
+      try {
+        const res = await api('/api/subjects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, code })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not create the subject');
+
+        showAlert(`Created ${escapeHtml(data.name)}. Students can now request to join it.`, 'success');
+        form.reset();
+        await loadTeacherSubjects();
+      } catch (err) {
+        showAlert(friendly(err), 'error');
+      } finally {
+        createBtn.disabled = false;
+        createBtn.textContent = 'Create subject';
+      }
+    });
+
+    // ---------- Start ----------
+    if (isTeacher) {
+      document.getElementById('subtitle').textContent = 'Create subjects and accept students who ask to join.';
+      form.classList.remove('hidden');
+      loadTeacherSubjects().catch((err) => showAlert(friendly(err), 'error'));
+    } else {
+      loadStudentSubjects().catch((err) => showAlert(friendly(err), 'error'));
+    }
+  </script>
+</body>
+</html>

@@ -12,8 +12,9 @@
       <a class="logo" href="index.html">Quiz<span>Point</span></a>
       <div class="nav-links">
         <a href="index.html">Quizzes</a>
+        <a href="subjects.html">Subjects</a>
         <a href="create.html" id="nav-create">Create Quiz</a>
-        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <span id="nav-user" class="nav-user"></span>
         <a href="#" id="logout-link">Logout</a>
       </div>
     </div>
@@ -22,18 +23,19 @@
   <main class="container">
     <div class="page-head">
       <h1 id="title">Leaderboard</h1>
-      <p class="subtitle">Top 10 scores. Ties go to whoever finished first.</p>
+      <p class="subtitle" id="subtitle">Top 10 scores. Ties go to whoever finished first.</p>
     </div>
 
     <div id="alert" class="alert alert-error"></div>
 
     <div class="card">
-      <div id="board"><p class="meta">Loading...</p></div>
+      <div id="board" class="table-wrap"><p class="meta">Loading...</p></div>
     </div>
 
     <div class="form-actions" style="justify-content:flex-start">
       <a class="btn btn-outline" href="index.html">Back to quizzes</a>
-      <a class="btn" id="take-link" href="#">Take this quiz</a>
+      <a class="btn hidden" id="take-link" href="#">Take this quiz</a>
+      <a class="btn btn-outline hidden" id="key-link" href="#">Answer key</a>
     </div>
   </main>
 
@@ -76,9 +78,11 @@
 
     const quizId = new URLSearchParams(window.location.search).get('id');
     const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
     const board = document.getElementById('board');
     const alertBox = document.getElementById('alert');
     const takeLink = document.getElementById('take-link');
+    const keyLink = document.getElementById('key-link');
 
     function escapeHtml(text) {
       return String(text).replace(/[&<>"']/g, (c) => ({
@@ -94,33 +98,41 @@
 
     async function loadLeaderboard() {
       if (!quizId) {
-        showError('No quiz selected. Go back to <a href="index.html">all quizzes</a>.');
+        showError('No quiz selected. Go back to <a href="index.html">your quizzes</a>.');
         return;
       }
-      takeLink.href = 'take.html?id=' + encodeURIComponent(quizId);
-      if (isTeacher) takeLink.classList.add('hidden');
 
       try {
-        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/leaderboard');
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Could not load leaderboard');
+        // The quiz details tell us whether to show "Take this quiz"
+        const [boardRes, quizRes] = await Promise.all([
+          api('/api/quizzes/' + encodeURIComponent(quizId) + '/leaderboard'),
+          api('/api/quizzes/' + encodeURIComponent(quizId))
+        ]);
+        const data = await boardRes.json();
+        const quiz = await quizRes.json();
+        if (!boardRes.ok) throw new Error(data.error || 'Could not load leaderboard');
 
         titleEl.textContent = 'Leaderboard: ' + data.title;
+        if (data.subjectName) subtitleEl.textContent = data.subjectName + ' · Top 10 scores. Ties go to whoever finished first.';
 
-        // Hide "Take this quiz" if you are already on the board
-        if (data.leaderboard.some((row) => row.usn === me.usn)) {
-          takeLink.classList.add('hidden');
+        if (isTeacher) {
+          keyLink.href = 'review.html?id=' + encodeURIComponent(quizId);
+          keyLink.classList.remove('hidden');
+        } else if (quizRes.ok && quiz.status === 'ongoing' && (!quiz.myAttempt || quiz.myAttempt.state === 'in-progress')) {
+          takeLink.href = 'take.html?id=' + encodeURIComponent(quizId);
+          takeLink.textContent = quiz.myAttempt ? 'Resume this quiz' : 'Take this quiz';
+          takeLink.classList.remove('hidden');
         }
 
         if (data.leaderboard.length === 0) {
-          board.innerHTML = '<p class="empty" style="padding:20px">No one has taken this quiz yet. Be the first!</p>';
+          board.innerHTML = '<p class="empty" style="padding:20px">No one has submitted this quiz yet.</p>';
           return;
         }
 
         board.innerHTML = `
           <table>
             <thead>
-              <tr><th>Rank</th><th>Name</th><th>USN</th><th>Score</th><th>Percent</th><th>Taken on</th></tr>
+              <tr><th>Rank</th><th>Name</th><th>USN</th><th>Score</th><th>Percent</th><th>Submitted</th></tr>
             </thead>
             <tbody>
               ${data.leaderboard.map((row, i) => `
@@ -130,7 +142,7 @@
                   <td>${escapeHtml(row.usn)}</td>
                   <td>${row.score} / ${row.total}</td>
                   <td>${Math.round((row.score / row.total) * 100)}%</td>
-                  <td>${new Date(row.takenAt).toLocaleString()}</td>
+                  <td>${row.takenAt ? new Date(row.takenAt).toLocaleString() : '-'}</td>
                 </tr>
               `).join('')}
             </tbody>

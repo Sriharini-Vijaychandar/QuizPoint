@@ -12,27 +12,54 @@
       <a class="logo" href="index.html">Quiz<span>Point</span></a>
       <div class="nav-links">
         <a href="index.html" class="active">Quizzes</a>
+        <a href="subjects.html">Subjects</a>
         <a href="create.html" id="nav-create">Create Quiz</a>
-        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <span id="nav-user" class="nav-user"></span>
         <a href="#" id="logout-link">Logout</a>
       </div>
     </div>
   </nav>
 
-  <main class="container">
+  <main class="container wide">
     <div class="page-head">
-      <h1>All Quizzes</h1>
-      <p class="subtitle" id="subtitle">Pick a quiz to attempt, or check who is on top.</p>
+      <h1 id="page-title">Your quizzes</h1>
+      <p class="subtitle" id="subtitle">Quizzes from the subjects you have joined.</p>
     </div>
 
     <div id="alert" class="alert alert-error"></div>
+    <div id="notice" class="alert alert-info"></div>
 
-    <div class="toolbar">
-      <input type="search" id="search" placeholder="Search quizzes by title...">
-      <a href="create.html" class="btn" id="create-btn">+ Create Quiz</a>
+    <div class="dash">
+      <!-- Sidebar: history for students, subjects for teachers -->
+      <aside class="sidebar">
+        <div class="card">
+          <h2 id="side-title">History</h2>
+          <div class="side-list" id="side-list"><p class="side-empty">Loading...</p></div>
+        </div>
+      </aside>
+
+      <div>
+        <div class="toolbar">
+          <input type="search" id="search" placeholder="Search quizzes by title...">
+          <select id="subject-filter" aria-label="Filter by subject">
+            <option value="">All subjects</option>
+          </select>
+          <a href="create.html" class="btn" id="create-btn">+ Create Quiz</a>
+        </div>
+
+        <div class="section-title"><h2>Ongoing now</h2><span class="count" id="ongoing-count"></span></div>
+        <div class="quiz-grid" id="ongoing"></div>
+
+        <div class="section-title"><h2>Upcoming</h2><span class="count" id="upcoming-count"></span></div>
+        <div class="quiz-grid" id="upcoming"></div>
+
+        <!-- Teachers also see their closed quizzes here. Students see theirs in History. -->
+        <div id="closed-wrap" class="hidden">
+          <div class="section-title"><h2>Closed</h2><span class="count" id="closed-count"></span></div>
+          <div class="quiz-grid" id="closed"></div>
+        </div>
+      </div>
     </div>
-
-    <div id="quiz-list" class="quiz-grid"></div>
   </main>
 
   <script>
@@ -72,78 +99,252 @@
     });
     // ---------- End of login check ----------
 
-    // Students don't get the create button; teachers get a different subtitle
-    if (isTeacher) {
-      document.getElementById('subtitle').textContent = 'Create quizzes and see how your students did.';
-    } else {
-      document.getElementById('create-btn').classList.add('hidden');
-    }
-
-    const listBox = document.getElementById('quiz-list');
-    const alertBox = document.getElementById('alert');
-    const searchInput = document.getElementById('search');
-
-    // Stops quiz titles from being run as HTML (XSS protection)
+    // Stops titles from being run as HTML (XSS protection)
     function escapeHtml(text) {
       return String(text).replace(/[&<>"']/g, (c) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[c]));
     }
 
+    // e.g. "Tue, 28 Oct, 5:00 pm"
+    function fmtDate(value) {
+      return new Date(value).toLocaleString([], {
+        weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+      });
+    }
+
+    const alertBox = document.getElementById('alert');
+    const noticeBox = document.getElementById('notice');
+    const searchInput = document.getElementById('search');
+    const subjectFilter = document.getElementById('subject-filter');
+    const sideList = document.getElementById('side-list');
+
     function showError(message) {
       alertBox.textContent = message;
       alertBox.classList.add('show');
     }
 
-    async function loadQuizzes(search = '') {
+    function showNotice(html) {
+      noticeBox.innerHTML = html;
+      noticeBox.classList.toggle('show', Boolean(html));
+    }
+
+    if (isTeacher) {
+      document.getElementById('page-title').textContent = 'Your quizzes';
+      document.getElementById('subtitle').textContent = 'Quizzes you have made, grouped by when they run.';
+      document.getElementById('side-title').textContent = 'Your subjects';
+      document.getElementById('closed-wrap').classList.remove('hidden');
+    } else {
+      document.getElementById('create-btn').classList.add('hidden');
+    }
+
+    // ---------- Subjects (filter dropdown + teacher sidebar) ----------
+    let subjects = [];
+
+    async function loadSubjects() {
+      const res = await api('/api/subjects');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not load subjects');
+
+      // Students can only filter by subjects they have been accepted into
+      subjects = isTeacher ? data : data.filter((s) => s.myStatus === 'approved');
+      // Keep the current choice, or use ?subject= from the Subjects page link
+      const chosen = subjectFilter.value || new URLSearchParams(location.search).get('subject') || '';
+      subjectFilter.innerHTML = '<option value="">All subjects</option>' + subjects
+        .map((s) => `<option value="${s._id}">${escapeHtml(s.name)} (${escapeHtml(s.code)})</option>`)
+        .join('');
+      subjectFilter.value = subjects.some((s) => s._id === chosen) ? chosen : '';
+
+      if (isTeacher) {
+        renderTeacherSidebar(data);
+        if (data.length === 0) {
+          showNotice('Create a subject first, then add quizzes to it. <a href="subjects.html">Go to Subjects</a>.');
+        } else {
+          const pending = data.reduce((sum, s) => sum + s.pendingCount, 0);
+          showNotice(pending > 0
+            ? `${pending} student${pending === 1 ? ' is' : 's are'} waiting to join your subjects. <a href="subjects.html">Review requests</a>.`
+            : '');
+        }
+      } else {
+        const pending = data.filter((s) => s.myStatus === 'pending').length;
+        if (subjects.length === 0) {
+          showNotice(pending > 0
+            ? 'Your join requests are waiting for a teacher. Quizzes appear here once you are accepted.'
+            : 'You haven\'t joined any subjects yet. <a href="subjects.html">Browse subjects</a> and request to join.');
+        } else {
+          showNotice(pending > 0
+            ? `${pending} join request${pending === 1 ? ' is' : 's are'} still waiting for a teacher.`
+            : '');
+        }
+      }
+    }
+
+    function renderTeacherSidebar(list) {
+      if (list.length === 0) {
+        sideList.innerHTML = '<p class="side-empty">No subjects yet. <a href="subjects.html">Create one</a>.</p>';
+        return;
+      }
+      sideList.innerHTML = list.map((s) => `
+        <div class="side-item">
+          <strong>${escapeHtml(s.name)}</strong>
+          <p class="meta">${escapeHtml(s.code)} &middot; ${s.memberCount} student${s.memberCount === 1 ? '' : 's'}</p>
+          <div class="links">
+            ${s.pendingCount > 0
+              ? `<a href="subjects.html">${s.pendingCount} request${s.pendingCount === 1 ? '' : 's'} waiting</a>`
+              : '<span class="meta">No pending requests</span>'}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ---------- Quiz cards ----------
+    function limitText(q) {
+      return q.timeLimitMinutes ? `${q.timeLimitMinutes} min limit` : 'No time limit';
+    }
+
+    function scheduleText(q) {
+      if (q.status === 'upcoming') return 'Opens ' + fmtDate(q.opensAt);
+      if (q.status === 'closed') return 'Closed ' + fmtDate(q.closesAt);
+      return q.closesAt ? 'Closes ' + fmtDate(q.closesAt) : 'Open, no closing time';
+    }
+
+    function studentCard(q) {
+      let action;
+      if (q.status === 'upcoming') {
+        action = '<button class="btn btn-small" disabled>Not open yet</button>';
+      } else if (q.myAttempt && q.myAttempt.state === 'in-progress') {
+        action = `<a class="btn btn-small" href="take.html?id=${q._id}">Resume</a>`;
+      } else {
+        action = `<a class="btn btn-small" href="take.html?id=${q._id}">Start quiz</a>`;
+      }
+      return `
+        <div class="card quiz-card">
+          <div class="card-top">
+            <span class="chip">${escapeHtml(q.subjectName)}</span>
+            <span class="pill pill-${q.status}">${q.status}</span>
+          </div>
+          <h3>${escapeHtml(q.title)}</h3>
+          <p class="meta">${q.questionCount} question${q.questionCount === 1 ? '' : 's'} &middot; ${limitText(q)}<br>${scheduleText(q)}</p>
+          <div class="card-actions">
+            ${action}
+            <a class="btn btn-small btn-outline" href="leaderboard.html?id=${q._id}">Leaderboard</a>
+          </div>
+        </div>
+      `;
+    }
+
+    function teacherCard(q) {
+      return `
+        <div class="card quiz-card">
+          <div class="card-top">
+            <span class="chip">${escapeHtml(q.subjectName)}</span>
+            <span class="pill pill-${q.status}">${q.status}</span>
+          </div>
+          <h3>${escapeHtml(q.title)}</h3>
+          <p class="meta">${q.questionCount} question${q.questionCount === 1 ? '' : 's'} &middot; ${limitText(q)}<br>${scheduleText(q)}</p>
+          <div class="card-actions">
+            <a class="btn btn-small" href="leaderboard.html?id=${q._id}">Results</a>
+            <a class="btn btn-small btn-outline" href="review.html?id=${q._id}">Answer key</a>
+          </div>
+        </div>
+      `;
+    }
+
+    function fillGrid(id, items, renderFn, emptyText) {
+      document.getElementById(id).innerHTML = items.length
+        ? items.map(renderFn).join('')
+        : `<div class="card empty">${emptyText}</div>`;
+      const countEl = document.getElementById(id + '-count');
+      if (countEl) countEl.textContent = items.length ? `${items.length} quiz${items.length === 1 ? '' : 'zes'}` : '';
+    }
+
+    // Student sidebar: every quiz you finished, plus closed ones you missed
+    function renderHistory(quizzes) {
+      const done = quizzes.filter((q) => {
+        const state = q.myAttempt ? q.myAttempt.state : null;
+        return state === 'submitted' || state === 'expired' || (q.status === 'closed' && !q.myAttempt);
+      });
+
+      done.sort((a, b) => {
+        const ta = new Date((a.myAttempt && a.myAttempt.takenAt) || a.closesAt || a.createdAt);
+        const tb = new Date((b.myAttempt && b.myAttempt.takenAt) || b.closesAt || b.createdAt);
+        return tb - ta;
+      });
+
+      if (done.length === 0) {
+        sideList.innerHTML = '<p class="side-empty">Quizzes you finish will show up here with your score.</p>';
+        return;
+      }
+
+      sideList.innerHTML = done.map((q) => {
+        const a = q.myAttempt;
+        let result;
+        if (!a) result = 'Not attempted';
+        else if (a.state === 'expired') result = 'Time ran out, not submitted';
+        else result = `Score <strong style="display:inline;color:var(--brand)">${a.score} / ${a.total}</strong>`;
+
+        let reviewLink = '';
+        if (a && q.canReview) {
+          reviewLink = `<a href="review.html?id=${q._id}">Review answers</a>`;
+        } else if (a && q.closesAt) {
+          reviewLink = `<span class="meta">Review opens ${fmtDate(q.closesAt)}</span>`;
+        }
+
+        return `
+          <div class="side-item">
+            <strong>${escapeHtml(q.title)}</strong>
+            <p class="meta">${escapeHtml(q.subjectName)} &middot; ${result}</p>
+            <div class="links">
+              ${reviewLink}
+              <a href="leaderboard.html?id=${q._id}">Leaderboard</a>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function loadQuizzes() {
       try {
-        const res = await api('/api/quizzes?search=' + encodeURIComponent(search));
+        const params = new URLSearchParams();
+        if (searchInput.value.trim()) params.set('search', searchInput.value.trim());
+        if (subjectFilter.value) params.set('subjectId', subjectFilter.value);
+
+        const res = await api('/api/quizzes?' + params.toString());
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Could not load quizzes');
-
         alertBox.classList.remove('show');
 
-        if (data.length === 0) {
-          listBox.innerHTML = `<div class="card empty">${
-            search ? 'No quizzes match your search.'
-              : isTeacher ? 'No quizzes yet. Create the first one!' : 'No quizzes yet. Check back once your teachers add some.'
-          }</div>`;
+        if (isTeacher) {
+          fillGrid('ongoing', data.filter((q) => q.status === 'ongoing'), teacherCard, 'No quizzes running right now.');
+          fillGrid('upcoming', data.filter((q) => q.status === 'upcoming'), teacherCard, 'Nothing scheduled.');
+          fillGrid('closed', data.filter((q) => q.status === 'closed'), teacherCard, 'No closed quizzes yet.');
           return;
         }
 
-        listBox.innerHTML = data.map((q) => `
-          <div class="card quiz-card">
-            <h3>${escapeHtml(q.title)}</h3>
-            <p class="meta">
-              ${q.questionCount} question${q.questionCount === 1 ? '' : 's'}
-              &middot; by ${escapeHtml(q.createdByName)}
-              &middot; ${new Date(q.createdAt).toLocaleDateString()}
-              ${q.myAttempt ? `<br><strong style="color:var(--brand)">You scored ${q.myAttempt.score} / ${q.myAttempt.total}</strong>` : ''}
-            </p>
-            <div class="card-actions">
-              ${isTeacher
-                ? `<a class="btn btn-small" href="leaderboard.html?id=${q._id}">View results</a>
-                   ${q.isMine ? '<span class="badge" style="align-self:center">Yours</span>' : ''}`
-                : `${q.myAttempt
-                    ? '<button class="btn btn-small" disabled>Attempted</button>'
-                    : `<a class="btn btn-small" href="take.html?id=${q._id}">Take quiz</a>`}
-                   <a class="btn btn-small btn-outline" href="leaderboard.html?id=${q._id}">Leaderboard</a>`}
-            </div>
-          </div>
-        `).join('');
+        // A student's finished quizzes move to History, so Ongoing only shows ones still to do
+        const notFinished = (q) => !q.myAttempt || q.myAttempt.state === 'in-progress';
+        fillGrid('ongoing', data.filter((q) => q.status === 'ongoing' && notFinished(q)), studentCard, 'Nothing to take right now.');
+        fillGrid('upcoming', data.filter((q) => q.status === 'upcoming'), studentCard, 'No upcoming quizzes.');
+        renderHistory(data);
       } catch (err) {
         showError(err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : err.message);
       }
     }
 
-    // Search as you type, but wait 300 ms after the last key so we don't spam the server
+    // Search as you type, but wait 300 ms after the last key
     let searchTimer;
     searchInput.addEventListener('input', () => {
       clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => loadQuizzes(searchInput.value), 300);
+      searchTimer = setTimeout(loadQuizzes, 300);
     });
+    subjectFilter.addEventListener('change', loadQuizzes);
 
-    loadQuizzes();
+    loadSubjects()
+      .catch((err) => showError(err.message))
+      .finally(loadQuizzes);
+
+    // Refresh every minute so quizzes move from Upcoming to Ongoing to Closed on their own
+    setInterval(loadQuizzes, 60000);
   </script>
 </body>
 </html>

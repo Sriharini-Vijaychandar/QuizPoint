@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Review</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="index.html">Quiz<span>Point</span></a>
+      <div class="nav-links">
+        <a href="index.html">Quizzes</a>
+        <a href="subjects.html">Subjects</a>
+        <a href="create.html" id="nav-create">Create Quiz</a>
+        <span id="nav-user" class="nav-user"></span>
+        <a href="#" id="logout-link">Logout</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-head">
+      <h1 id="title">Review</h1>
+      <p class="subtitle" id="subtitle"></p>
+    </div>
+
+    <div id="alert" class="alert alert-error"></div>
+
+    <div id="summary" class="card score-box hidden">
+      <p class="meta">Your score</p>
+      <div class="score-big" id="score"></div>
+      <p class="meta" id="score-note"></p>
+    </div>
+
+    <div id="questions" class="card hidden"></div>
+
+    <div class="form-actions" style="justify-content:flex-start">
+      <a class="btn btn-outline" href="index.html">Back to quizzes</a>
+      <a class="btn btn-outline" id="leaderboard-link" href="#">Leaderboard</a>
+    </div>
+  </main>
+
+  <script>
+    // ---------- Login check (same block on every page) ----------
+    const token = localStorage.getItem('qp_token');
+    const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
+    if (!token || !me) {
+      location.replace('login.html');
+      throw new Error('Not logged in');
+    }
+    const isTeacher = me.role === 'teacher';
+    document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
+    // Only teachers see the "Create Quiz" link
+    if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
+
+    // fetch() that always sends the token, and goes to login if the session has ended
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token }
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('qp_token');
+        localStorage.removeItem('qp_user');
+        location.replace('login.html');
+        throw new Error('Please log in again');
+      }
+      return res;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      localStorage.removeItem('qp_token');
+      localStorage.removeItem('qp_user');
+      location.replace('login.html');
+    });
+    // ---------- End of login check ----------
+
+    const quizId = new URLSearchParams(window.location.search).get('id');
+    const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
+    const alertBox = document.getElementById('alert');
+    const questionsBox = document.getElementById('questions');
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function fmtDate(value) {
+      return new Date(value).toLocaleString([], {
+        weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+      });
+    }
+
+    function showError(message) {
+      alertBox.innerHTML = message;
+      alertBox.classList.add('show');
+    }
+
+    // One option row: green for the correct answer, red for your wrong pick
+    function optionRow(q, j, mine) {
+      const isCorrect = j === q.correctIndex;
+      const isMine = j === mine;
+      let cls = '';
+      let tag = '';
+      if (isCorrect && isMine) { cls = 'correct'; tag = 'Your answer, correct'; }
+      else if (isCorrect) { cls = 'correct'; tag = 'Correct answer'; }
+      else if (isMine) { cls = 'wrong'; tag = 'Your answer'; }
+      return `
+        <div class="review-opt ${cls}">
+          <span>${escapeHtml(q.options[j])}</span>
+          ${tag ? `<span class="review-tag">${tag}</span>` : ''}
+        </div>
+      `;
+    }
+
+    async function loadReview() {
+      if (!quizId) {
+        titleEl.textContent = 'No quiz selected';
+        showError('Go back to <a href="index.html">your quizzes</a> and pick one.');
+        return;
+      }
+      document.getElementById('leaderboard-link').href = 'leaderboard.html?id=' + encodeURIComponent(quizId);
+
+      try {
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/review');
+        const data = await res.json();
+        if (!res.ok) {
+          if (data.reviewOpensAt) {
+            throw new Error('You can review this quiz after it closes on ' + fmtDate(data.reviewOpensAt) + '.');
+          }
+          throw new Error(data.error || 'Could not load the review');
+        }
+
+        titleEl.textContent = (data.mode === 'answer-key' ? 'Answer key: ' : 'Review: ') + data.title;
+        subtitleEl.textContent = data.subjectName + ' · ' + data.questionCount + ' question' + (data.questionCount === 1 ? '' : 's');
+
+        if (data.mode === 'my-review') {
+          document.getElementById('summary').classList.remove('hidden');
+          document.getElementById('score').textContent = `${data.score} / ${data.total}`;
+          document.getElementById('score-note').textContent = data.state === 'expired'
+            ? 'Your time ran out before you submitted, so no answers were recorded.'
+            : Math.round((data.score / data.total) * 100) + '% correct';
+        }
+
+        questionsBox.innerHTML = data.questions.map((q, i) => {
+          const mine = data.mode === 'my-review' ? q.myAnswer : undefined;
+          const skipped = data.mode === 'my-review' && (mine === -1 || mine === null);
+          return `
+            <div class="review-q">
+              <h3>${i + 1}. ${escapeHtml(q.text)}</h3>
+              ${skipped ? '<p class="skipped-note">You left this one blank.</p>' : ''}
+              ${q.options.map((_, j) => optionRow(q, j, mine)).join('')}
+            </div>
+          `;
+        }).join('');
+        questionsBox.classList.remove('hidden');
+      } catch (err) {
+        titleEl.textContent = 'Review not available yet';
+        showError(err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : escapeHtml(err.message));
+      }
+    }
+
+    loadReview();
+  </script>
+</body>
+</html>

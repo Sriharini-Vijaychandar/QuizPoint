@@ -12,8 +12,9 @@
       <a class="logo" href="index.html">Quiz<span>Point</span></a>
       <div class="nav-links">
         <a href="index.html">Quizzes</a>
+        <a href="subjects.html">Subjects</a>
         <a href="create.html" id="nav-create">Create Quiz</a>
-        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <span id="nav-user" class="nav-user"></span>
         <a href="#" id="logout-link">Logout</a>
       </div>
     </div>
@@ -27,11 +28,23 @@
 
     <div id="alert" class="alert alert-error"></div>
 
-    <!-- The quiz form -->
+    <!-- Step 1: details and the Start button -->
+    <div id="intro" class="card hidden">
+      <dl class="info-list" id="info-list"></dl>
+      <div id="intro-message"></div>
+      <div class="form-actions" style="justify-content:flex-start" id="intro-actions"></div>
+    </div>
+
+    <!-- Step 2: the questions -->
     <form id="take-form" class="hidden" novalidate>
+      <div class="timer-bar hidden" id="timer-bar">
+        <span>Time left</span>
+        <span class="timer" id="timer">--:--</span>
+      </div>
+
       <div class="card">
         <p style="margin:0">Attempting as <strong id="who"></strong></p>
-        <p class="hint">You can attempt each quiz only once.</p>
+        <p class="hint">Your choices are saved on this device as you go. You can submit once.</p>
       </div>
 
       <div class="card" id="questions"></div>
@@ -41,18 +54,22 @@
       </div>
     </form>
 
-    <!-- Shown after submitting -->
+    <!-- Step 3: the result -->
     <div id="result" class="hidden">
       <div class="card score-box">
-        <p class="meta" style="margin:0">Your score</p>
+        <p class="meta">Your score</p>
         <div class="score-big" id="score"></div>
         <p class="meta" id="score-percent"></p>
-        <a class="btn btn-outline" href="index.html">Back to quizzes</a>
+        <p class="meta" id="review-note" style="margin:10px 0 14px"></p>
+        <div class="form-actions" style="justify-content:center">
+          <a class="btn btn-outline" href="index.html">Back to quizzes</a>
+          <a class="btn" id="review-link" href="#">Review answers</a>
+        </div>
       </div>
 
       <div class="card">
-        <h3 style="margin-top:0">Leaderboard (Top 10)</h3>
-        <div id="leaderboard"></div>
+        <h2>Leaderboard (Top 10)</h2>
+        <div id="leaderboard" class="table-wrap"></div>
       </div>
     </div>
   </main>
@@ -99,17 +116,34 @@
     const titleEl = document.getElementById('quiz-title');
     const metaEl = document.getElementById('quiz-meta');
     const alertBox = document.getElementById('alert');
+    const intro = document.getElementById('intro');
     const form = document.getElementById('take-form');
     const questionsBox = document.getElementById('questions');
     const submitBtn = document.getElementById('submit-btn');
     const resultBox = document.getElementById('result');
+    const timerBar = document.getElementById('timer-bar');
+    const timerEl = document.getElementById('timer');
+
+    // Answers are kept on this device while you work, so a refresh doesn't lose them
+    const SAVE_KEY = 'qp_answers_' + quizId + '_' + me.usn;
 
     let questionCount = 0;
+    let deadline = null;      // Date when the time runs out (from the server)
+    let clockOffset = 0;      // server time minus this computer's time
+    let timerHandle = null;
+    let submitting = false;
+    let quizInfo = null;
 
     function escapeHtml(text) {
       return String(text).replace(/[&<>"']/g, (c) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
       }[c]));
+    }
+
+    function fmtDate(value) {
+      return new Date(value).toLocaleString([], {
+        weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'
+      });
     }
 
     function showError(message) {
@@ -124,40 +158,218 @@
 
     document.getElementById('who').textContent = me.name + ' (' + me.usn + ')';
 
-    // Load the quiz. The server sends questions and options only, never the answers.
+    // ---------- Step 1: details ----------
+    function renderIntro(q) {
+      quizInfo = q;
+      titleEl.textContent = q.title;
+      metaEl.textContent = q.subjectName + ' · by ' + q.createdByName;
+
+      const rows = [
+        ['Questions', q.questionCount],
+        ['Time limit', q.timeLimitMinutes ? q.timeLimitMinutes + ' minutes' : 'None'],
+        ['Opens', q.opensAt ? fmtDate(q.opensAt) : 'Already open'],
+        ['Closes', q.closesAt ? fmtDate(q.closesAt) : 'No closing time']
+      ];
+      document.getElementById('info-list').innerHTML = rows
+        .map(([k, v]) => `<dt>${k}</dt><dd>${escapeHtml(v)}</dd>`)
+        .join('');
+
+      const msg = document.getElementById('intro-message');
+      const actions = document.getElementById('intro-actions');
+      const a = q.myAttempt;
+      const leaderboardBtn = `<a class="btn btn-outline" href="leaderboard.html?id=${q._id}">Leaderboard</a>`;
+
+      if (a && a.state === 'submitted') {
+        msg.innerHTML = `<div class="alert alert-success show">You've already submitted this quiz. Score: <strong>${a.score} / ${a.total}</strong>.</div>`;
+        actions.innerHTML = (q.canReview
+          ? `<a class="btn" href="review.html?id=${q._id}">Review answers</a>`
+          : `<span class="meta">Review opens ${fmtDate(q.closesAt)}</span>`) + leaderboardBtn;
+      } else if (a && a.state === 'expired') {
+        msg.innerHTML = '<div class="alert alert-error show">Your time for this quiz ran out before you submitted.</div>';
+        actions.innerHTML = (q.canReview ? `<a class="btn" href="review.html?id=${q._id}">Review answers</a>` : '') + leaderboardBtn;
+      } else if (a && a.state === 'in-progress') {
+        msg.innerHTML = '<div class="alert alert-info show">You started this quiz. Your timer is still running.</div>';
+        actions.innerHTML = '<button class="btn" id="start-btn">Resume quiz</button>';
+      } else if (q.status === 'upcoming') {
+        msg.innerHTML = `<div class="alert alert-info show">This quiz opens ${fmtDate(q.opensAt)}. Come back then.</div>`;
+        actions.innerHTML = '<a class="btn btn-outline" href="index.html">Back to quizzes</a>';
+      } else if (q.status === 'closed') {
+        msg.innerHTML = '<div class="alert alert-error show">This quiz has closed.</div>';
+        actions.innerHTML = leaderboardBtn;
+      } else {
+        msg.innerHTML = q.timeLimitMinutes
+          ? `<p class="meta" style="margin:0 0 14px">The ${q.timeLimitMinutes}-minute timer starts when you press Start and keeps running even if you close the page. Answers are submitted automatically when time runs out.</p>`
+          : '<p class="meta" style="margin:0 0 14px">There is no time limit. You can attempt this quiz once.</p>';
+        actions.innerHTML = '<button class="btn" id="start-btn">Start quiz</button>';
+      }
+
+      const startBtn = document.getElementById('start-btn');
+      if (startBtn) startBtn.addEventListener('click', startQuiz);
+      intro.classList.remove('hidden');
+    }
+
     async function loadQuiz() {
       if (!quizId) {
         titleEl.textContent = 'No quiz selected';
-        showError('Go back to <a href="index.html">all quizzes</a> and pick one.');
+        showError('Go back to <a href="index.html">your quizzes</a> and pick one.');
         return;
       }
-
       try {
         const res = await api('/api/quizzes/' + encodeURIComponent(quizId));
-        const quiz = await res.json();
-        if (!res.ok) throw new Error(quiz.error || 'Could not load the quiz');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load the quiz');
+        renderIntro(data);
+      } catch (err) {
+        titleEl.textContent = 'Quiz not available';
+        showError(friendly(err));
+      }
+    }
 
-        titleEl.textContent = quiz.title;
-        questionCount = quiz.questions.length;
-        metaEl.textContent = questionCount + ' question' + (questionCount === 1 ? '' : 's') + ' · by ' + quiz.createdByName;
+    // ---------- Step 2: questions and timer ----------
+    function readSaved() {
+      try { return JSON.parse(localStorage.getItem(SAVE_KEY) || '{}') || {}; } catch (e) { return {}; }
+    }
 
-        questionsBox.innerHTML = quiz.questions.map((q, i) => `
+    function saveAnswer(i, value) {
+      try {
+        const saved = readSaved();
+        saved[i] = value;
+        localStorage.setItem(SAVE_KEY, JSON.stringify(saved));
+      } catch (e) { /* saving is only a convenience */ }
+    }
+
+    async function startQuiz() {
+      const btn = document.getElementById('start-btn');
+      btn.disabled = true;
+      btn.textContent = 'Starting...';
+      alertBox.classList.remove('show');
+
+      try {
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/start', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not start the quiz');
+
+        questionCount = data.questions.length;
+        const saved = readSaved();
+
+        // The server sends questions and options only, never the answers
+        questionsBox.innerHTML = data.questions.map((q, i) => `
           <div class="take-question">
             <h3>${i + 1}. ${escapeHtml(q.text)}</h3>
             ${q.options.map((opt, j) => `
               <label class="choice">
-                <input type="radio" name="q${i}" value="${j}">
+                <input type="radio" name="q${i}" value="${j}" ${saved[i] === j ? 'checked' : ''}>
                 ${escapeHtml(opt)}
               </label>
             `).join('')}
           </div>
         `).join('');
 
+        questionsBox.querySelectorAll('input[type="radio"]').forEach((input) => {
+          input.addEventListener('change', () => saveAnswer(Number(input.name.slice(1)), Number(input.value)));
+        });
+
+        intro.classList.add('hidden');
         form.classList.remove('hidden');
+
+        if (data.deadline) {
+          deadline = new Date(data.deadline);
+          clockOffset = new Date(data.serverNow).getTime() - Date.now();
+          timerBar.classList.remove('hidden');
+          tick();
+          timerHandle = setInterval(tick, 1000);
+        }
       } catch (err) {
-        titleEl.textContent = 'Quiz not available';
         showError(friendly(err));
+        btn.disabled = false;
+        btn.textContent = 'Start quiz';
       }
+    }
+
+    // Updates the countdown. When it reaches zero, the answers are sent automatically.
+    function tick() {
+      const msLeft = deadline.getTime() - (Date.now() + clockOffset);
+      if (msLeft <= 0) {
+        timerEl.textContent = '00:00';
+        clearInterval(timerHandle);
+        submitAnswers(true);
+        return;
+      }
+      const totalSeconds = Math.ceil(msLeft / 1000);
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.floor((totalSeconds % 3600) / 60);
+      const s = totalSeconds % 60;
+      const pad = (n) => String(n).padStart(2, '0');
+      timerEl.textContent = (h > 0 ? h + ':' : '') + pad(m) + ':' + pad(s);
+      timerEl.classList.toggle('low', totalSeconds <= 60);
+    }
+
+    function collectAnswers() {
+      const answers = [];
+      for (let i = 0; i < questionCount; i++) {
+        const picked = form.querySelector(`input[name="q${i}"]:checked`);
+        answers.push(picked ? Number(picked.value) : -1);
+      }
+      return answers;
+    }
+
+    async function submitAnswers(automatic) {
+      if (submitting) return;
+      alertBox.classList.remove('show');
+      const answers = collectAnswers();
+
+      if (!automatic) {
+        const skipped = answers.filter((a) => a === -1).length;
+        if (skipped > 0 && !confirm(`You left ${skipped} question(s) blank. Submit anyway?`)) return;
+      }
+
+      submitting = true;
+      submitBtn.disabled = true;
+      submitBtn.textContent = automatic ? 'Time is up, submitting...' : 'Submitting...';
+
+      try {
+        // Only the answers are sent. The server knows who you are from your login token.
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not submit');
+
+        clearInterval(timerHandle);
+        try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* ignore */ }
+        showResult(data);
+      } catch (err) {
+        showError(friendly(err));
+        submitting = false;
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit answers';
+      }
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitAnswers(false);
+    });
+
+    // ---------- Step 3: result ----------
+    function showResult(data) {
+      form.classList.add('hidden');
+      resultBox.classList.remove('hidden');
+      document.getElementById('score').textContent = `${data.score} / ${data.total}`;
+      document.getElementById('score-percent').textContent = Math.round((data.score / data.total) * 100) + '% correct';
+
+      const reviewLink = document.getElementById('review-link');
+      reviewLink.href = 'review.html?id=' + encodeURIComponent(quizId);
+      if (data.canReview) {
+        document.getElementById('review-note').textContent = 'You can review your answers now.';
+      } else {
+        document.getElementById('review-note').textContent = 'You can review your answers after the quiz closes on ' + fmtDate(data.reviewOpensAt) + '.';
+        reviewLink.classList.add('hidden');
+      }
+      loadLeaderboard();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     async function loadLeaderboard() {
@@ -187,57 +399,11 @@
       }
     }
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      alertBox.classList.remove('show');
-
-      // Collect the chosen option index for each question, or -1 if skipped
-      const answers = [];
-      for (let i = 0; i < questionCount; i++) {
-        const picked = form.querySelector(`input[name="q${i}"]:checked`);
-        answers.push(picked ? Number(picked.value) : -1);
-      }
-
-      const skipped = answers.filter((a) => a === -1).length;
-      if (skipped > 0 && !confirm(`You left ${skipped} question(s) blank. Submit anyway?`)) return;
-
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Submitting...';
-
-      try {
-        // Only the answers are sent. The server knows who you are from your login token.
-        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/attempts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ answers })
-        });
-        const data = await res.json();
-
-        if (res.status === 409) {
-          showError(`You have already attempted this quiz. <a href="leaderboard.html?id=${encodeURIComponent(quizId)}">View the leaderboard</a>.`);
-          return;
-        }
-        if (!res.ok) throw new Error(data.error || 'Could not submit');
-
-        // The score comes from the server, not from the browser
-        form.classList.add('hidden');
-        resultBox.classList.remove('hidden');
-        document.getElementById('score').textContent = `${data.score} / ${data.total}`;
-        document.getElementById('score-percent').textContent =
-          Math.round((data.score / data.total) * 100) + '% correct';
-        loadLeaderboard();
-      } catch (err) {
-        showError(friendly(err));
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Submit answers';
-      }
-    });
-
+    // ---------- Start ----------
     // Teachers can't attempt quizzes (the server also refuses with 403)
     if (isTeacher) {
       titleEl.textContent = 'Teachers cannot attempt quizzes';
-      showError(`<a href="leaderboard.html?id=${encodeURIComponent(quizId || '')}">View this quiz's results</a> instead.`);
+      showError(`<a href="leaderboard.html?id=${encodeURIComponent(quizId || '')}">See this quiz's results</a> or <a href="review.html?id=${encodeURIComponent(quizId || '')}">its answer key</a> instead.`);
     } else {
       loadQuiz();
     }
