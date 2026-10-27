@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Create Quiz</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="index.html">Quiz<span>Point</span></a>
+      <div class="nav-links">
+        <a href="index.html">Quizzes</a>
+        <a href="create.html" id="nav-create" class="active">Create Quiz</a>
+        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <a href="#" id="logout-link">Logout</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-head">
+      <h1>Create a Quiz</h1>
+      <p class="subtitle">Add questions, then pick the correct option for each one.</p>
+    </div>
+
+    <div id="alert" class="alert"></div>
+
+    <form id="quiz-form" novalidate>
+      <div class="card">
+        <div class="form-group">
+          <label for="quiz-title">Quiz title *</label>
+          <input type="text" id="quiz-title" placeholder="e.g. JavaScript Basics">
+        </div>
+      </div>
+
+      <div id="questions"></div>
+
+      <div class="form-actions">
+        <button type="button" id="add-question" class="btn btn-outline">+ Add question</button>
+        <button type="submit" id="submit-btn" class="btn">Save quiz</button>
+      </div>
+    </form>
+  </main>
+
+  <script>
+    // ---------- Login check (same block on every page) ----------
+    const token = localStorage.getItem('qp_token');
+    const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
+    if (!token || !me) {
+      location.replace('login.html');
+      throw new Error('Not logged in');
+    }
+    const isTeacher = me.role === 'teacher';
+    document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
+    // Only teachers see the "Create Quiz" link
+    if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
+
+    // fetch() that always sends the token, and goes to login if the session has ended
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token }
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('qp_token');
+        localStorage.removeItem('qp_user');
+        location.replace('login.html');
+        throw new Error('Please log in again');
+      }
+      return res;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      localStorage.removeItem('qp_token');
+      localStorage.removeItem('qp_user');
+      location.replace('login.html');
+    });
+    // ---------- End of login check ----------
+
+    const form = document.getElementById('quiz-form');
+    const titleInput = document.getElementById('quiz-title');
+    const questionsBox = document.getElementById('questions');
+    const alertBox = document.getElementById('alert');
+    const submitBtn = document.getElementById('submit-btn');
+
+    // Each question gets its own radio group name so picking an answer in one doesn't clear another
+    let groupCounter = 0;
+
+    function showAlert(message, type) {
+      alertBox.className = 'alert show ' + (type === 'success' ? 'alert-success' : 'alert-error');
+      alertBox.innerHTML = message;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function renumberQuestions() {
+      [...questionsBox.children].forEach((block, i) => {
+        block.querySelector('.q-label').textContent = 'Question ' + (i + 1);
+      });
+    }
+
+    function renumberOptions(optionsBox) {
+      [...optionsBox.children].forEach((row, i) => {
+        row.querySelector('.opt-text').placeholder = 'Option ' + (i + 1);
+      });
+    }
+
+    function addOption(block) {
+      const optionsBox = block.querySelector('.options');
+      if (optionsBox.children.length >= 6) {
+        showAlert('A question can have at most 6 options.', 'error');
+        return;
+      }
+
+      const row = document.createElement('div');
+      row.className = 'option-row';
+      row.innerHTML = `
+        <input type="radio" name="${block.dataset.group}" title="Mark as the correct answer">
+        <input type="text" class="opt-text">
+        <button type="button" class="btn-text" title="Remove option">&#10005;</button>
+      `;
+
+      row.querySelector('button').addEventListener('click', () => {
+        if (optionsBox.children.length <= 2) {
+          showAlert('Each question needs at least 2 options.', 'error');
+          return;
+        }
+        row.remove();
+        renumberOptions(optionsBox);
+      });
+
+      optionsBox.appendChild(row);
+      renumberOptions(optionsBox);
+    }
+
+    function addQuestion() {
+      const block = document.createElement('div');
+      block.className = 'question-block';
+      block.dataset.group = 'correct-' + groupCounter++;
+      block.innerHTML = `
+        <div class="question-head">
+          <strong class="q-label"></strong>
+          <button type="button" class="btn-text remove-q">Remove question</button>
+        </div>
+        <div class="form-group">
+          <input type="text" class="q-text" placeholder="Type the question">
+        </div>
+        <div class="options"></div>
+        <button type="button" class="btn btn-small btn-outline add-opt">+ Add option</button>
+        <p class="hint">Select the circle next to the correct answer.</p>
+      `;
+
+      block.querySelector('.remove-q').addEventListener('click', () => {
+        if (questionsBox.children.length === 1) {
+          showAlert('A quiz needs at least one question.', 'error');
+          return;
+        }
+        block.remove();
+        renumberQuestions();
+      });
+
+      block.querySelector('.add-opt').addEventListener('click', () => addOption(block));
+
+      questionsBox.appendChild(block);
+      // Start every question with 4 empty options
+      for (let i = 0; i < 4; i++) addOption(block);
+      renumberQuestions();
+    }
+
+    // Reads the form and builds { title, questions: [{ text, options, correctIndex }] }
+    function buildQuiz() {
+      const questions = [...questionsBox.children].map((block) => {
+        const rows = [...block.querySelectorAll('.option-row')];
+        return {
+          text: block.querySelector('.q-text').value.trim(),
+          options: rows.map((r) => r.querySelector('.opt-text').value.trim()),
+          correctIndex: rows.findIndex((r) => r.querySelector('input[type="radio"]').checked)
+        };
+      });
+      return { title: titleInput.value.trim(), questions };
+    }
+
+    // Quick checks in the browser for a friendlier message. The server checks everything again.
+    function checkQuiz(quiz) {
+      if (!quiz.title) return 'Please enter a quiz title.';
+      for (let i = 0; i < quiz.questions.length; i++) {
+        const q = quiz.questions[i];
+        if (!q.text) return `Question ${i + 1}: please type the question.`;
+        if (q.options.some((o) => !o)) return `Question ${i + 1}: fill in every option or remove the empty ones.`;
+        if (q.correctIndex === -1) return `Question ${i + 1}: select the correct answer.`;
+      }
+      return null;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const quiz = buildQuiz();
+
+      const problem = checkQuiz(quiz);
+      if (problem) {
+        showAlert(problem, 'error');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Saving...';
+
+      try {
+        const res = await api('/api/quizzes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(quiz)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not save the quiz');
+
+        showAlert(
+          `Quiz saved! <a href="leaderboard.html?id=${data._id}">View its leaderboard</a> or <a href="index.html">see all quizzes</a>.`,
+          'success'
+        );
+        form.reset();
+        questionsBox.innerHTML = '';
+        addQuestion();
+      } catch (err) {
+        showAlert(err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : err.message, 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Save quiz';
+      }
+    });
+
+    document.getElementById('add-question').addEventListener('click', addQuestion);
+
+    // Only teachers can create quizzes. Students see a message instead of the form.
+    // (The server also refuses with 403, so this is just for a nicer screen.)
+    if (isTeacher) {
+      addQuestion(); // start with one question on the page
+    } else {
+      form.classList.add('hidden');
+      showAlert('Only teachers can create quizzes. <a href="index.html">Go to all quizzes</a>.', 'error');
+    }
+  </script>
+</body>
+</html>

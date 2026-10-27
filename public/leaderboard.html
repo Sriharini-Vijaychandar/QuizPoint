@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Leaderboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="index.html">Quiz<span>Point</span></a>
+      <div class="nav-links">
+        <a href="index.html">Quizzes</a>
+        <a href="create.html" id="nav-create">Create Quiz</a>
+        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <a href="#" id="logout-link">Logout</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-head">
+      <h1 id="title">Leaderboard</h1>
+      <p class="subtitle">Top 10 scores. Ties go to whoever finished first.</p>
+    </div>
+
+    <div id="alert" class="alert alert-error"></div>
+
+    <div class="card">
+      <div id="board"><p class="meta">Loading...</p></div>
+    </div>
+
+    <div class="form-actions" style="justify-content:flex-start">
+      <a class="btn btn-outline" href="index.html">Back to quizzes</a>
+      <a class="btn" id="take-link" href="#">Take this quiz</a>
+    </div>
+  </main>
+
+  <script>
+    // ---------- Login check (same block on every page) ----------
+    const token = localStorage.getItem('qp_token');
+    const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
+    if (!token || !me) {
+      location.replace('login.html');
+      throw new Error('Not logged in');
+    }
+    const isTeacher = me.role === 'teacher';
+    document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
+    // Only teachers see the "Create Quiz" link
+    if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
+
+    // fetch() that always sends the token, and goes to login if the session has ended
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token }
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('qp_token');
+        localStorage.removeItem('qp_user');
+        location.replace('login.html');
+        throw new Error('Please log in again');
+      }
+      return res;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      localStorage.removeItem('qp_token');
+      localStorage.removeItem('qp_user');
+      location.replace('login.html');
+    });
+    // ---------- End of login check ----------
+
+    const quizId = new URLSearchParams(window.location.search).get('id');
+    const titleEl = document.getElementById('title');
+    const board = document.getElementById('board');
+    const alertBox = document.getElementById('alert');
+    const takeLink = document.getElementById('take-link');
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function showError(message) {
+      alertBox.innerHTML = message;
+      alertBox.classList.add('show');
+      board.innerHTML = '';
+    }
+
+    async function loadLeaderboard() {
+      if (!quizId) {
+        showError('No quiz selected. Go back to <a href="index.html">all quizzes</a>.');
+        return;
+      }
+      takeLink.href = 'take.html?id=' + encodeURIComponent(quizId);
+      if (isTeacher) takeLink.classList.add('hidden');
+
+      try {
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/leaderboard');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load leaderboard');
+
+        titleEl.textContent = 'Leaderboard: ' + data.title;
+
+        // Hide "Take this quiz" if you are already on the board
+        if (data.leaderboard.some((row) => row.usn === me.usn)) {
+          takeLink.classList.add('hidden');
+        }
+
+        if (data.leaderboard.length === 0) {
+          board.innerHTML = '<p class="empty" style="padding:20px">No one has taken this quiz yet. Be the first!</p>';
+          return;
+        }
+
+        board.innerHTML = `
+          <table>
+            <thead>
+              <tr><th>Rank</th><th>Name</th><th>USN</th><th>Score</th><th>Percent</th><th>Taken on</th></tr>
+            </thead>
+            <tbody>
+              ${data.leaderboard.map((row, i) => `
+                <tr class="${i === 0 ? 'top-row' : ''} ${row.usn === me.usn ? 'me-row' : ''}">
+                  <td>${i + 1}</td>
+                  <td>${escapeHtml(row.name || '-')}${i === 0 ? '<span class="badge">Topper</span>' : ''}${row.usn === me.usn ? ' (you)' : ''}</td>
+                  <td>${escapeHtml(row.usn)}</td>
+                  <td>${row.score} / ${row.total}</td>
+                  <td>${Math.round((row.score / row.total) * 100)}%</td>
+                  <td>${new Date(row.takenAt).toLocaleString()}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        showError(err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : escapeHtml(err.message));
+      }
+    }
+
+    loadLeaderboard();
+  </script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Create account</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Password boxes look the same as the text boxes in style.css */
+    input[type="password"] {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      background: #fff;
+    }
+    input[type="password"]:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 2px #dbeafe;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="login.html">Quiz<span>Point</span></a>
+    </div>
+  </nav>
+
+  <main class="container" style="max-width:440px">
+    <div class="page-head">
+      <h1>Create account</h1>
+      <p class="subtitle">Only for RVCE students with an @rvce.edu.in email id.</p>
+    </div>
+
+    <div id="alert" class="alert alert-error"></div>
+
+    <form id="register-form" class="card" novalidate>
+      <div class="form-group">
+        <label for="name">Full name *</label>
+        <input type="text" id="name" placeholder="e.g. Rahul Sharma" autocomplete="name">
+      </div>
+      <div class="form-group">
+        <label for="email">College email *</label>
+        <input type="text" id="email" placeholder="yourname@rvce.edu.in" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label for="usn">USN *</label>
+        <input type="text" id="usn" placeholder="e.g. 1RV23CS001" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="password">Password *</label>
+        <input type="password" id="password" autocomplete="new-password">
+        <p class="hint">At least 6 characters.</p>
+      </div>
+      <button type="submit" id="submit-btn" class="btn" style="width:100%">Create account</button>
+      <p class="hint" style="text-align:center;margin-top:14px">
+        Already have an account? <a href="login.html">Log in</a>
+      </p>
+    </form>
+  </main>
+
+  <script>
+    if (localStorage.getItem('qp_token')) {
+      location.replace('index.html');
+    }
+
+    const form = document.getElementById('register-form');
+    const alertBox = document.getElementById('alert');
+    const submitBtn = document.getElementById('submit-btn');
+
+    const USN_PATTERN = /^[0-9][A-Z]{2}[0-9]{2}[A-Z]{2}[0-9]{3}$/;
+
+    function showError(message) {
+      alertBox.textContent = message;
+      alertBox.classList.add('show');
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      alertBox.classList.remove('show');
+
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim().toLowerCase();
+      const usn = document.getElementById('usn').value.trim().toUpperCase();
+      const password = document.getElementById('password').value;
+
+      // Friendly checks in the browser. The server checks all of these again.
+      if (!name) return showError('Please enter your name.');
+      if (!email.endsWith('@rvce.edu.in')) return showError('Only email ids ending in @rvce.edu.in are allowed.');
+      if (!USN_PATTERN.test(usn)) return showError('That USN looks wrong. Example: 1RV23CS001');
+      if (password.length < 6) return showError('Password must be at least 6 characters.');
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Creating account...';
+
+      try {
+        const res = await fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, usn, password })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not create account');
+
+        location.replace('login.html?registered=1&email=' + encodeURIComponent(email));
+      } catch (err) {
+        showError(err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Create account';
+      }
+    });
+  </script>
+</body>
+</html>

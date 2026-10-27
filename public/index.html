@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Quizzes</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="index.html">Quiz<span>Point</span></a>
+      <div class="nav-links">
+        <a href="index.html" class="active">Quizzes</a>
+        <a href="create.html" id="nav-create">Create Quiz</a>
+        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <a href="#" id="logout-link">Logout</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-head">
+      <h1>All Quizzes</h1>
+      <p class="subtitle" id="subtitle">Pick a quiz to attempt, or check who is on top.</p>
+    </div>
+
+    <div id="alert" class="alert alert-error"></div>
+
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Search quizzes by title...">
+      <a href="create.html" class="btn" id="create-btn">+ Create Quiz</a>
+    </div>
+
+    <div id="quiz-list" class="quiz-grid"></div>
+  </main>
+
+  <script>
+    // ---------- Login check (same block on every page) ----------
+    const token = localStorage.getItem('qp_token');
+    const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
+    if (!token || !me) {
+      location.replace('login.html');
+      throw new Error('Not logged in');
+    }
+    const isTeacher = me.role === 'teacher';
+    document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
+    // Only teachers see the "Create Quiz" link
+    if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
+
+    // fetch() that always sends the token, and goes to login if the session has ended
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token }
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('qp_token');
+        localStorage.removeItem('qp_user');
+        location.replace('login.html');
+        throw new Error('Please log in again');
+      }
+      return res;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      localStorage.removeItem('qp_token');
+      localStorage.removeItem('qp_user');
+      location.replace('login.html');
+    });
+    // ---------- End of login check ----------
+
+    // Students don't get the create button; teachers get a different subtitle
+    if (isTeacher) {
+      document.getElementById('subtitle').textContent = 'Create quizzes and see how your students did.';
+    } else {
+      document.getElementById('create-btn').classList.add('hidden');
+    }
+
+    const listBox = document.getElementById('quiz-list');
+    const alertBox = document.getElementById('alert');
+    const searchInput = document.getElementById('search');
+
+    // Stops quiz titles from being run as HTML (XSS protection)
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function showError(message) {
+      alertBox.textContent = message;
+      alertBox.classList.add('show');
+    }
+
+    async function loadQuizzes(search = '') {
+      try {
+        const res = await api('/api/quizzes?search=' + encodeURIComponent(search));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load quizzes');
+
+        alertBox.classList.remove('show');
+
+        if (data.length === 0) {
+          listBox.innerHTML = `<div class="card empty">${
+            search ? 'No quizzes match your search.'
+              : isTeacher ? 'No quizzes yet. Create the first one!' : 'No quizzes yet. Check back once your teachers add some.'
+          }</div>`;
+          return;
+        }
+
+        listBox.innerHTML = data.map((q) => `
+          <div class="card quiz-card">
+            <h3>${escapeHtml(q.title)}</h3>
+            <p class="meta">
+              ${q.questionCount} question${q.questionCount === 1 ? '' : 's'}
+              &middot; by ${escapeHtml(q.createdByName)}
+              &middot; ${new Date(q.createdAt).toLocaleDateString()}
+              ${q.myAttempt ? `<br><strong style="color:var(--brand)">You scored ${q.myAttempt.score} / ${q.myAttempt.total}</strong>` : ''}
+            </p>
+            <div class="card-actions">
+              ${isTeacher
+                ? `<a class="btn btn-small" href="leaderboard.html?id=${q._id}">View results</a>
+                   ${q.isMine ? '<span class="badge" style="align-self:center">Yours</span>' : ''}`
+                : `${q.myAttempt
+                    ? '<button class="btn btn-small" disabled>Attempted</button>'
+                    : `<a class="btn btn-small" href="take.html?id=${q._id}">Take quiz</a>`}
+                   <a class="btn btn-small btn-outline" href="leaderboard.html?id=${q._id}">Leaderboard</a>`}
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        showError(err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : err.message);
+      }
+    }
+
+    // Search as you type, but wait 300 ms after the last key so we don't spam the server
+    let searchTimer;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadQuizzes(searchInput.value), 300);
+    });
+
+    loadQuizzes();
+  </script>
+</body>
+</html>

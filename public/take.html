@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuizPoint - Take Quiz</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="logo" href="index.html">Quiz<span>Point</span></a>
+      <div class="nav-links">
+        <a href="index.html">Quizzes</a>
+        <a href="create.html" id="nav-create">Create Quiz</a>
+        <span id="nav-user" style="margin-left:20px;font-size:14px;font-weight:600"></span>
+        <a href="#" id="logout-link">Logout</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-head">
+      <h1 id="quiz-title">Loading quiz...</h1>
+      <p class="subtitle" id="quiz-meta"></p>
+    </div>
+
+    <div id="alert" class="alert alert-error"></div>
+
+    <!-- The quiz form -->
+    <form id="take-form" class="hidden" novalidate>
+      <div class="card">
+        <p style="margin:0">Attempting as <strong id="who"></strong></p>
+        <p class="hint">You can attempt each quiz only once.</p>
+      </div>
+
+      <div class="card" id="questions"></div>
+
+      <div class="form-actions">
+        <button type="submit" id="submit-btn" class="btn">Submit answers</button>
+      </div>
+    </form>
+
+    <!-- Shown after submitting -->
+    <div id="result" class="hidden">
+      <div class="card score-box">
+        <p class="meta" style="margin:0">Your score</p>
+        <div class="score-big" id="score"></div>
+        <p class="meta" id="score-percent"></p>
+        <a class="btn btn-outline" href="index.html">Back to quizzes</a>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Leaderboard (Top 10)</h3>
+        <div id="leaderboard"></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ---------- Login check (same block on every page) ----------
+    const token = localStorage.getItem('qp_token');
+    const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
+    if (!token || !me) {
+      location.replace('login.html');
+      throw new Error('Not logged in');
+    }
+    const isTeacher = me.role === 'teacher';
+    document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
+    // Only teachers see the "Create Quiz" link
+    if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
+
+    // fetch() that always sends the token, and goes to login if the session has ended
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: 'Bearer ' + token }
+      });
+      if (res.status === 401) {
+        localStorage.removeItem('qp_token');
+        localStorage.removeItem('qp_user');
+        location.replace('login.html');
+        throw new Error('Please log in again');
+      }
+      return res;
+    }
+
+    document.getElementById('logout-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      localStorage.removeItem('qp_token');
+      localStorage.removeItem('qp_user');
+      location.replace('login.html');
+    });
+    // ---------- End of login check ----------
+
+    const quizId = new URLSearchParams(window.location.search).get('id');
+
+    const titleEl = document.getElementById('quiz-title');
+    const metaEl = document.getElementById('quiz-meta');
+    const alertBox = document.getElementById('alert');
+    const form = document.getElementById('take-form');
+    const questionsBox = document.getElementById('questions');
+    const submitBtn = document.getElementById('submit-btn');
+    const resultBox = document.getElementById('result');
+
+    let questionCount = 0;
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[c]));
+    }
+
+    function showError(message) {
+      alertBox.innerHTML = message;
+      alertBox.classList.add('show');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function friendly(err) {
+      return err.message === 'Failed to fetch' ? 'Cannot reach the server. Is node server.js running?' : escapeHtml(err.message);
+    }
+
+    document.getElementById('who').textContent = me.name + ' (' + me.usn + ')';
+
+    // Load the quiz. The server sends questions and options only, never the answers.
+    async function loadQuiz() {
+      if (!quizId) {
+        titleEl.textContent = 'No quiz selected';
+        showError('Go back to <a href="index.html">all quizzes</a> and pick one.');
+        return;
+      }
+
+      try {
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId));
+        const quiz = await res.json();
+        if (!res.ok) throw new Error(quiz.error || 'Could not load the quiz');
+
+        titleEl.textContent = quiz.title;
+        questionCount = quiz.questions.length;
+        metaEl.textContent = questionCount + ' question' + (questionCount === 1 ? '' : 's') + ' · by ' + quiz.createdByName;
+
+        questionsBox.innerHTML = quiz.questions.map((q, i) => `
+          <div class="take-question">
+            <h3>${i + 1}. ${escapeHtml(q.text)}</h3>
+            ${q.options.map((opt, j) => `
+              <label class="choice">
+                <input type="radio" name="q${i}" value="${j}">
+                ${escapeHtml(opt)}
+              </label>
+            `).join('')}
+          </div>
+        `).join('');
+
+        form.classList.remove('hidden');
+      } catch (err) {
+        titleEl.textContent = 'Quiz not available';
+        showError(friendly(err));
+      }
+    }
+
+    async function loadLeaderboard() {
+      const box = document.getElementById('leaderboard');
+      try {
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/leaderboard');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not load leaderboard');
+
+        box.innerHTML = `
+          <table>
+            <thead><tr><th>Rank</th><th>Name</th><th>USN</th><th>Score</th></tr></thead>
+            <tbody>
+              ${data.leaderboard.map((row, i) => `
+                <tr class="${i === 0 ? 'top-row' : ''} ${row.usn === me.usn ? 'me-row' : ''}">
+                  <td>${i + 1}</td>
+                  <td>${escapeHtml(row.name || '-')}${i === 0 ? '<span class="badge">Topper</span>' : ''}${row.usn === me.usn ? ' (you)' : ''}</td>
+                  <td>${escapeHtml(row.usn)}</td>
+                  <td>${row.score} / ${row.total}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      } catch (err) {
+        box.innerHTML = '<p class="meta">' + friendly(err) + '</p>';
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      alertBox.classList.remove('show');
+
+      // Collect the chosen option index for each question, or -1 if skipped
+      const answers = [];
+      for (let i = 0; i < questionCount; i++) {
+        const picked = form.querySelector(`input[name="q${i}"]:checked`);
+        answers.push(picked ? Number(picked.value) : -1);
+      }
+
+      const skipped = answers.filter((a) => a === -1).length;
+      if (skipped > 0 && !confirm(`You left ${skipped} question(s) blank. Submit anyway?`)) return;
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting...';
+
+      try {
+        // Only the answers are sent. The server knows who you are from your login token.
+        const res = await api('/api/quizzes/' + encodeURIComponent(quizId) + '/attempts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers })
+        });
+        const data = await res.json();
+
+        if (res.status === 409) {
+          showError(`You have already attempted this quiz. <a href="leaderboard.html?id=${encodeURIComponent(quizId)}">View the leaderboard</a>.`);
+          return;
+        }
+        if (!res.ok) throw new Error(data.error || 'Could not submit');
+
+        // The score comes from the server, not from the browser
+        form.classList.add('hidden');
+        resultBox.classList.remove('hidden');
+        document.getElementById('score').textContent = `${data.score} / ${data.total}`;
+        document.getElementById('score-percent').textContent =
+          Math.round((data.score / data.total) * 100) + '% correct';
+        loadLeaderboard();
+      } catch (err) {
+        showError(friendly(err));
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit answers';
+      }
+    });
+
+    // Teachers can't attempt quizzes (the server also refuses with 403)
+    if (isTeacher) {
+      titleEl.textContent = 'Teachers cannot attempt quizzes';
+      showError(`<a href="leaderboard.html?id=${encodeURIComponent(quizId || '')}">View this quiz's results</a> instead.`);
+    } else {
+      loadQuiz();
+    }
+  </script>
+</body>
+</html>
