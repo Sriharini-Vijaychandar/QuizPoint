@@ -82,7 +82,7 @@
   </main>
 
   <script>
-    // ---------- Login check (same block on every page) ----------
+  
     const token = localStorage.getItem('qp_token');
     const me = JSON.parse(localStorage.getItem('qp_user') || 'null');
     if (!token || !me) {
@@ -91,10 +91,9 @@
     }
     const isTeacher = me.role === 'teacher';
     document.getElementById('nav-user').textContent = me.name + (isTeacher ? ' (Teacher)' : '');
-    // Only teachers see the "Create Quiz" link
+   
     if (!isTeacher) document.getElementById('nav-create').classList.add('hidden');
 
-    // fetch() that always sends the token, and goes to login if the session has ended
     async function api(url, options = {}) {
       const res = await fetch(url, {
         ...options,
@@ -111,12 +110,12 @@
 
     document.getElementById('logout-link').addEventListener('click', async (e) => {
       e.preventDefault();
-      try { await api('/api/logout', { method: 'POST' }); } catch (err) { /* logging out anyway */ }
+      try { await api('/api/logout', { method: 'POST' }); } catch (err) {  }
       localStorage.removeItem('qp_token');
       localStorage.removeItem('qp_user');
       location.replace('login.html');
     });
-    // ---------- End of login check ----------
+    
 
     function escapeHtml(text) {
       return String(text).replace(/[&<>"']/g, (c) => ({
@@ -138,7 +137,7 @@
     const useLimit = document.getElementById('use-limit');
     const limitInput = document.getElementById('time-limit');
 
-    // Each question gets its own radio group name so picking an answer in one doesn't clear another
+    
     let groupCounter = 0;
 
     function showAlert(message, type) {
@@ -147,7 +146,7 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    // ---------- Subjects ----------
+    
     async function loadSubjects() {
       try {
         const res = await api('/api/subjects');
@@ -168,14 +167,13 @@
       }
     }
 
-    // ---------- Schedule ----------
-    // datetime-local wants "YYYY-MM-DDTHH:MM" in local time
+    
     function toLocalInput(date) {
       const pad = (n) => String(n).padStart(2, '0');
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
     }
 
-    // Turning a checkbox on enables its box and fills a sensible starting value
+    
     useOpens.addEventListener('change', () => {
       opensInput.disabled = !useOpens.checked;
       if (useOpens.checked && !opensInput.value) {
@@ -194,7 +192,7 @@
       if (useLimit.checked && !limitInput.value) limitInput.value = 15;
     });
 
-    // ---------- Questions ----------
+    
     function renumberQuestions() {
       [...questionsBox.children].forEach((block, i) => {
         block.querySelector('.q-label').textContent = 'Question ' + (i + 1);
@@ -264,12 +262,12 @@
       block.querySelector('.add-opt').addEventListener('click', () => addOption(block));
 
       questionsBox.appendChild(block);
-      // Start every question with 4 empty options
+      
       for (let i = 0; i < 4; i++) addOption(block);
       renumberQuestions();
     }
 
-    // Reads the form into what the server expects
+    
     function buildQuiz() {
       const questions = [...questionsBox.children].map((block) => {
         const rows = [...block.querySelectorAll('.option-row')];
@@ -284,14 +282,14 @@
         title: titleInput.value.trim(),
         subjectId: subjectSelect.value,
         questions,
-        // Local time from the box -> exact moment in ISO format, so the server and every browser agree
+        
         opensAt: useOpens.checked && opensInput.value ? new Date(opensInput.value).toISOString() : null,
         closesAt: useCloses.checked && closesInput.value ? new Date(closesInput.value).toISOString() : null,
         timeLimitMinutes: useLimit.checked ? parseInt(limitInput.value, 10) : null
       };
     }
 
-    // Quick checks in the browser for a friendlier message. The server checks everything again.
+    
     function checkQuiz(quiz) {
       if (!quiz.title) return 'Please enter a quiz title.';
       if (!quiz.subjectId) return 'Please choose a subject.';
@@ -339,7 +337,7 @@
           `Quiz saved in ${escapeHtml(data.subjectName)}. <a href="index.html">See your quizzes</a> or <a href="review.html?id=${data._id}">check the answer key</a>.`,
           'success'
         );
-        // Keep the subject and schedule so the next quiz is quicker to make
+        
         titleInput.value = '';
         questionsBox.innerHTML = '';
         addQuestion();
@@ -352,12 +350,10 @@
     });
 
     document.getElementById('add-question').addEventListener('click', addQuestion);
-
-    // Only teachers can create quizzes. Students see a message instead of the form.
-    // (The server also refuses with 403, so this is just for a nicer screen.)
+    
     if (isTeacher) {
       loadSubjects();
-      addQuestion(); // start with one question on the page
+      addQuestion();
     } else {
       form.classList.add('hidden');
       showAlert('Only teachers can create quizzes. <a href="index.html">Go to your quizzes</a>.', 'error');
